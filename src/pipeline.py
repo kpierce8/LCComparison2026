@@ -572,6 +572,245 @@ def generate_embeddings(ctx, model, input_dir, output_dir, batch_size, device, r
     click.echo(f"  Output: {output_dir}")
 
 
+# ---- Phase 4: Classification & Training Commands ----
+
+
+@cli.command("train-classifier")
+@click.option("--model", default="prithvi", help="Embedding model (prithvi, satlas, ssl4eo)")
+@click.option("--method", default=None, help="Classifier method (xgboost, random_forest, mlp, linear)")
+@click.option("--labels", default=None, help="Path to labels file (GeoJSON/CSV with tile_id + class)")
+@click.option("--embeddings-dir", default=None, help="Directory with cached embeddings")
+@click.option("--cv/--no-cv", default=True, help="Run cross-validation")
+@click.option("--n-folds", default=5, help="Number of CV folds")
+@click.pass_context
+def train_classifier(ctx, model, method, labels, embeddings_dir, cv, n_folds):
+    """Train a land cover classifier on embeddings."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.training.trainer import Trainer
+    from src.processing.batch_processor import BatchProcessor
+    from src.config_schema import CLASS_SCHEMA
+
+    # Resolve classifier config
+    cls_config = OmegaConf.to_container(config.get("classification", {}), resolve=True)
+    if method is None:
+        method = cls_config.get("method", "xgboost")
+    method_config = cls_config.get(method, {})
+
+    # Load embeddings
+    if embeddings_dir is None:
+        embeddings_dir = str(PROJECT_ROOT / "data" / "embeddings" / model)
+
+    emb_dir = Path(embeddings_dir)
+    npz_files = sorted(emb_dir.glob("*.npz"))
+    if not npz_files:
+        click.echo(f"No embeddings found in {embeddings_dir}")
+        click.echo("Run 'lccompare generate-embeddings' first.")
+        return
+
+    click.echo(f"Loading embeddings from {embeddings_dir}...")
+    embeddings = {}
+    for f in npz_files:
+        try:
+            data = np.load(f)
+            if "embedding" in data:
+                embeddings[f.stem] = data["embedding"]
+        except Exception as e:
+            logger.warning(f"Failed to load {f}: {e}")
+
+    click.echo(f"Loaded {len(embeddings)} embeddings")
+
+    # Load labels
+    if labels is None:
+        labels_path = PROJECT_ROOT / "data" / "labels" / "train.geojson"
+        if not labels_path.exists():
+            # Try any geojson
+            label_files = list((PROJECT_ROOT / "data" / "labels").glob("**/*.geojson"))
+            if label_files:
+                labels_path = label_files[0]
+            else:
+                click.echo("No labels found. Run 'lccompare generate-labels' or 'lccompare import-labels'.")
+                return
+    else:
+        labels_path = Path(labels)
+
+    click.echo(f"Loading labels from {labels_path}...")
+    import geopandas as gpd
+    gdf = gpd.read_file(labels_path)
+
+    # Build label dict: tile_id -> class_index
+    class_names = list(CLASS_SCHEMA.keys())
+    label_dict = {}
+    if "tile_id" in gdf.columns and "class_index" in gdf.columns:
+        for _, row in gdf.iterrows():
+            label_dict[row["tile_id"]] = int(row["class_index"])
+    elif "tile_id" in gdf.columns and "land_cover" in gdf.columns:
+        for _, row in gdf.iterrows():
+            cls_name = row["land_cover"]
+            if cls_name in CLASS_SCHEMA:
+                label_dict[row["tile_id"]] = CLASS_SCHEMA[cls_name]
+
+    if not label_dict:
+        click.echo("Could not extract tile_id/class pairs from labels file.")
+        click.echo("Expected columns: tile_id + (class_index or land_cover)")
+        return
+
+    click.echo(f"Matched labels: {len(label_dict)}")
+
+    # Setup trainer
+    output_dir = PROJECT_ROOT / "data" / "checkpoints"
+    trainer = Trainer(
+        method=method,
+        n_classes=len(class_names),
+        classifier_config=method_config,
+        output_dir=output_dir,
+    )
+
+    # Prepare data
+    try:
+        X, y, matched_ids = trainer.prepare_training_data(embeddings, label_dict)
+    except ValueError as e:
+        click.echo(str(e))
+        return
+
+    click.echo(f"Training {method} classifier on {len(matched_ids)} samples...")
+
+    # Split for validation
+    from sklearn.model_selection import train_test_split
+    X_train, X_val, y_train, y_val = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=42,
+    )
+
+    # Train
+    metrics = trainer.train(X_train, y_train, X_val, y_val, model_name=model)
+
+    click.echo(f"\nTraining Results:")
+    click.echo(f"  Method: {method}")
+    click.echo(f"  Train accuracy: {metrics.get('train_accuracy', 'N/A'):.4f}")
+    if "val_accuracy" in metrics:
+        click.echo(f"  Val accuracy: {metrics['val_accuracy']:.4f}")
+    click.echo(f"  Time: {metrics.get('elapsed_seconds', 'N/A')}s")
+
+    # Cross-validation
+    if cv:
+        click.echo(f"\nRunning {n_folds}-fold cross-validation...")
+        val_config = OmegaConf.to_container(config.get("validation", {}), resolve=True)
+        cv_stratified = val_config.get("cross_validation", {}).get("stratified", True)
+
+        cv_results = trainer.cross_validate(
+            X, y, n_folds=n_folds, stratified=cv_stratified,
+        )
+
+        summary = cv_results["summary"]
+        click.echo(f"  Accuracy: {summary['accuracy_mean']:.4f} ± {summary['accuracy_std']:.4f}")
+        click.echo(f"  F1 (macro): {summary['f1_mean']:.4f} ± {summary['f1_std']:.4f}")
+        click.echo(f"  IoU (mean): {summary['iou_mean']:.4f} ± {summary['iou_std']:.4f}")
+        click.echo(f"  Kappa: {summary['kappa_mean']:.4f} ± {summary['kappa_std']:.4f}")
+
+    click.echo(f"\nSaved to: {output_dir}")
+
+
+@cli.command("predict")
+@click.option("--model", default="prithvi", help="Embedding model name")
+@click.option("--classifier-path", default=None, help="Path to trained classifier")
+@click.option("--embeddings-dir", default=None, help="Directory with cached embeddings")
+@click.option("--output-dir", default=None, help="Output predictions directory")
+@click.pass_context
+def predict(ctx, model, classifier_path, embeddings_dir, output_dir):
+    """Predict land cover classes for all embedded tiles."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.training.trainer import Trainer
+
+    # Resolve paths
+    if embeddings_dir is None:
+        embeddings_dir = str(PROJECT_ROOT / "data" / "embeddings" / model)
+    if classifier_path is None:
+        classifier_path = str(PROJECT_ROOT / "data" / "checkpoints" / f"{model}_classifier")
+    if output_dir is None:
+        output_dir = str(PROJECT_ROOT / "data" / "predictions" / model)
+
+    # Load embeddings
+    emb_dir = Path(embeddings_dir)
+    npz_files = sorted(emb_dir.glob("*.npz"))
+    if not npz_files:
+        click.echo(f"No embeddings found in {embeddings_dir}")
+        return
+
+    click.echo(f"Loading {len(npz_files)} embeddings...")
+    embeddings = {}
+    for f in npz_files:
+        try:
+            data = np.load(f)
+            if "embedding" in data:
+                embeddings[f.stem] = data["embedding"]
+        except Exception:
+            pass
+
+    # Load classifier
+    click.echo(f"Loading classifier from {classifier_path}...")
+    trainer = Trainer(output_dir=output_dir)
+    try:
+        trainer.load_classifier(classifier_path)
+    except FileNotFoundError:
+        click.echo(f"Classifier not found at {classifier_path}")
+        click.echo("Run 'lccompare train-classifier' first.")
+        return
+
+    # Predict
+    click.echo(f"Predicting {len(embeddings)} tiles...")
+    result = trainer.predict_tiles(embeddings, output_dir=output_dir)
+
+    summary = result["summary"]
+    click.echo(f"\nPrediction Summary:")
+    click.echo(f"  Tiles: {summary['total_tiles']}")
+    click.echo(f"  Mean confidence: {summary['mean_confidence']:.4f}")
+    click.echo(f"  Class distribution:")
+    for cls, cnt in sorted(summary["class_distribution"].items()):
+        click.echo(f"    {cls}: {cnt}")
+    click.echo(f"  Output: {output_dir}")
+
+
+@cli.command("mosaic-tiles")
+@click.option("--model", default="prithvi", help="Model name for file naming")
+@click.option("--predictions-dir", default=None, help="Directory with tile predictions")
+@click.option("--output", default=None, help="Output mosaic path")
+@click.option("--product", default="classification", help="Product type (classification, confidence, probability)")
+@click.pass_context
+def mosaic_tiles(ctx, model, predictions_dir, output, product):
+    """Mosaic tile predictions into final raster output."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.spatial.mosaic import TileMosaicker
+
+    if predictions_dir is None:
+        predictions_dir = str(PROJECT_ROOT / "data" / "predictions" / model / "tiles" / product)
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / f"landcover_{model}.tif")
+
+    pred_dir = Path(predictions_dir)
+    tile_files = sorted(pred_dir.glob("*.tif"))
+    if not tile_files:
+        click.echo(f"No tile GeoTIFFs found in {predictions_dir}")
+        click.echo("Run 'lccompare predict' first to generate tile predictions.")
+        return
+
+    click.echo(f"Mosaicking {len(tile_files)} tiles...")
+    mosaicker = TileMosaicker()
+
+    try:
+        metadata = mosaicker.mosaic_tiles(tile_files, output)
+        click.echo(f"\nMosaic created: {output}")
+        click.echo(f"  Shape: {metadata['shape']}")
+        click.echo(f"  Tiles: {metadata['n_tiles']}")
+    except Exception as e:
+        click.echo(f"Mosaicking failed: {e}")
+        logger.error(f"Mosaic error: {e}")
+
+
 def main():
     cli(obj={})
 
