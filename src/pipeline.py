@@ -934,8 +934,10 @@ def zonal_stats(ctx, prediction, boundaries, id_field, output, resolution):
 @click.option("--reference", required=True, help="Path to reference points")
 @click.option("--class-field", default="LC_CLASS", help="Class label column in reference data")
 @click.option("--output", default=None, help="Output directory for assessment results")
+@click.option("--report/--no-report", default=False, help="Generate HTML report with plots")
+@click.option("--model-name", default=None, help="Model name for report title")
 @click.pass_context
-def assess_accuracy(ctx, prediction, reference, class_field, output):
+def assess_accuracy(ctx, prediction, reference, class_field, output, report, model_name):
     """Run accuracy assessment against reference points."""
     logger = logging.getLogger("lccomparison")
 
@@ -950,6 +952,8 @@ def assess_accuracy(ctx, prediction, reference, class_field, output):
 
     if output is None:
         output = str(PROJECT_ROOT / "data" / "outputs" / "accuracy")
+    if model_name is None:
+        model_name = Path(prediction).stem
 
     assessor = AccuracyAssessor()
     click.echo(f"Assessing accuracy...")
@@ -979,6 +983,38 @@ def assess_accuracy(ctx, prediction, reference, class_field, output):
 
     for w in results.get("warnings", []):
         click.echo(f"  WARNING: {w}")
+
+    # Generate HTML report
+    if report:
+        from src.validation.error_analysis import compute_error_map, compute_spatial_error_density
+        from src.validation.report_generator import generate_accuracy_report
+
+        click.echo(f"Generating error analysis...")
+        error_analysis = compute_error_map(prediction, reference, class_field)
+
+        error_density = None
+        if error_analysis.get("n_points", 0) > 0:
+            import geopandas as _gpd
+            ref_gdf = _gpd.read_file(reference)
+            import rasterio as _rio
+            with _rio.open(prediction) as _src:
+                if ref_gdf.crs != _src.crs:
+                    ref_gdf = ref_gdf.to_crs(_src.crs)
+            all_coords = [(g.x, g.y) for g in ref_gdf.geometry]
+            # Split into error/correct based on error analysis counts
+            n_err = error_analysis["n_errors"]
+            n_corr = error_analysis["n_correct"]
+            # Use the error rate to approximate; detailed split in error_map
+            error_density = compute_spatial_error_density(
+                all_coords[:n_err], all_coords[n_err:n_err + n_corr],
+            )
+
+        report_path = Path(output) / f"{model_name}_report.html"
+        generate_accuracy_report(
+            results, report_path, model_name=model_name,
+            error_analysis=error_analysis, error_density=error_density,
+        )
+        click.echo(f"Report: {report_path}")
 
     click.echo(f"\nSaved to: {output}")
 
@@ -1027,6 +1063,92 @@ def compare_models(ctx, raster_a, raster_b, name_a, name_b, output):
         click.echo(f"  Per-class IoU:")
         for name, metrics in per_class.items():
             click.echo(f"    {name}: {metrics['agreement_iou']:.3f}")
+
+    click.echo(f"\nSaved to: {output}")
+
+
+@cli.command("compare-accuracy")
+@click.option("--models", required=True, help="Comma-separated model raster paths")
+@click.option("--names", default=None, help="Comma-separated model names (defaults to filenames)")
+@click.option("--reference", required=True, help="Path to reference points")
+@click.option("--class-field", default="LC_CLASS", help="Class label column")
+@click.option("--output", default=None, help="Output directory")
+@click.option("--report/--no-report", default=True, help="Generate HTML comparison report")
+@click.pass_context
+def compare_accuracy(ctx, models, names, reference, class_field, output, report):
+    """Compare accuracy of multiple models against reference points."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.validation.accuracy_assessor import AccuracyAssessor
+
+    model_paths = [p.strip() for p in models.split(",")]
+    if names:
+        model_names = [n.strip() for n in names.split(",")]
+    else:
+        model_names = [Path(p).stem for p in model_paths]
+
+    if len(model_names) != len(model_paths):
+        click.echo("Number of names must match number of model paths.")
+        return
+
+    # Validate paths
+    for p in model_paths:
+        if not Path(p).exists():
+            click.echo(f"Raster not found: {p}")
+            return
+    if not Path(reference).exists():
+        click.echo(f"Reference file not found: {reference}")
+        return
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / "accuracy" / "comparison")
+
+    prediction_paths = dict(zip(model_names, model_paths))
+
+    assessor = AccuracyAssessor()
+    click.echo(f"Comparing {len(model_paths)} models...")
+
+    comparison = assessor.compare_models(
+        prediction_paths, reference, class_field, output_dir=output,
+    )
+
+    # Print results
+    click.echo(f"\nModel Comparison:")
+    for model_name, m in comparison.get("models", {}).items():
+        if "error" in m:
+            click.echo(f"  {model_name}: ERROR - {m['error']}")
+        else:
+            click.echo(
+                f"  {model_name}: OA={m.get('overall_accuracy', 0):.4f} "
+                f"kappa={m.get('kappa', 0):.4f} "
+                f"F1={m.get('f1_macro', 0):.4f}"
+            )
+
+    ranking = comparison.get("ranking", [])
+    if ranking:
+        click.echo(f"\nRanking:")
+        for i, r in enumerate(ranking, 1):
+            click.echo(f"  {i}. {r['model']} ({r['overall_accuracy']:.4f})")
+        click.echo(f"  Best: {comparison.get('best_model', 'N/A')}")
+
+    # Generate HTML report
+    if report:
+        from src.validation.report_generator import generate_comparison_report
+
+        # Collect per-model full results for the report
+        per_model_results = {}
+        for model_name, pred_path in prediction_paths.items():
+            try:
+                result = assessor.assess(pred_path, reference, class_field)
+                per_model_results[model_name] = result
+            except Exception:
+                pass
+
+        report_path = Path(output) / "comparison_report.html"
+        generate_comparison_report(
+            comparison, report_path, per_model_results=per_model_results,
+        )
+        click.echo(f"\nReport: {report_path}")
 
     click.echo(f"\nSaved to: {output}")
 
