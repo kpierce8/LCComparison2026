@@ -1,0 +1,27 @@
+# Sentinel-2 Imagery Source Configuration
+
+source:
+  name: "sentinel2"
+  platform: "Sentinel-2"
+  provider: "gee"
+  collection_id: "COPERNICUS/S2_SR_HARMONIZED"
+
+  # Bands
+  bands:
+    - {name: "B2", description: "Blue", wavelength: 490, resolution: 10}
+    - {name: "B3", description: "Green", wavelength: 560, resolution: 10}
+    - {name: "B4", description: "Red", wavelength: 665, resolution: 10}
+    - {name: "B8", description: "NIR", wavelength: 842, resolution: 10}
+    - {name: "B11", description: "SWIR1", wavelength: 1610, resolution: 20}
+    - {name: "B12", description: "SWIR2", wavelength: 2190, resolution: 20}
+
+  # Filtering
+  date_range:
+    start: "2024-06-01"
+    end: "2024-09-30"
+  cloud_filter: 20
+  composite_method: "median"
+
+  # Export
+  scale: 10
+  crs: "EPSG:32610"

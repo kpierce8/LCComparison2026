@@ -1,0 +1,22 @@
+# NAIP Imagery Source Configuration
+
+source:
+  name: "naip"
+  platform: "NAIP"
+  provider: "gee"
+  collection_id: "USDA/NAIP/DOQQ"
+
+  # Bands
+  bands:
+    - {name: "R", description: "Red", wavelength: 635, resolution: 1}
+    - {name: "G", description: "Green", wavelength: 555, resolution: 1}
+    - {name: "B", description: "Blue", wavelength: 480, resolution: 1}
+    - {name: "N", description: "NIR", wavelength: 845, resolution: 1}
+
+  # Filtering
+  year: 2023
+  composite_method: "mosaic"
+
+  # Export
+  scale: 1
+  crs: "EPSG:32610"

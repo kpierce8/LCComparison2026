@@ -1,0 +1,166 @@
+source_project: /media/ken/data/LCAnalysis2026
+num_experiments: 6
+class_mapping:
+  description: LCAnalysis2026 8-class to LCComparison2026 7-class mapping
+  source_classes:
+    0: background
+    1: trees
+    2: shrubs
+    3: herbaceous
+    4: ground
+    5: water
+    6: gravel
+    7: built
+  target_classes:
+    0: water
+    1: trees
+    2: shrub
+    3: grass
+    4: crops
+    5: built
+    6: bare
+  index_mapping:
+    0: 6
+    1: 1
+    2: 2
+    3: 3
+    4: 6
+    5: 0
+    6: 6
+    7: 5
+  name_mapping:
+    background: bare
+    trees: trees
+    shrubs: shrub
+    herbaceous: grass
+    ground: bare
+    water: water
+    gravel: bare
+    built: built
+  merge_details:
+    bare: Merges background (0), ground (4), gravel (6) into bare (6)
+    grass: Renames herbaceous (3) to grass (3)
+    shrub: Renames shrubs (2) to shrub (2)
+  source_raw_mapping:
+    0: 0
+    1: 1
+    2: 2
+    3: 3
+    4: 4
+    6: 5
+    7: 6
+    10: 7
+lcanalysis_schema:
+  num_classes: 8
+  class_names:
+  - background
+  - trees
+  - shrubs
+  - herbaceous
+  - ground
+  - water
+  - gravel
+  - built
+lccomparison_schema:
+  num_classes: 7
+  class_names:
+    0: water
+    1: trees
+    2: shrub
+    3: grass
+    4: crops
+    5: built
+    6: bare
+experiments:
+- experiment_id: lctest_20000_jan26_sam2_20260203_144617
+  model_name: sam2
+  encoder_name: hiera_l
+  dataset: lctest_20000_jan26
+  path: /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617
+  checkpoints:
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617/checkpoints/epoch=001-val_loss=1.0094-val_iou=0.4500.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617/checkpoints/epoch=002-val_loss=0.9551-val_iou=0.4694.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617/checkpoints/epoch=004-val_loss=0.9386-val_iou=0.4847.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617/checkpoints/last.ckpt
+  best_checkpoint: /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_sam2_20260203_144617/checkpoints/last.ckpt
+  metrics:
+    test/accuracy: 0.614
+    test/f1: 0.6096
+    test/f1_per_class/background: 0.7759
+    test/f1_per_class/built: 0.61
+    test/f1_per_class/gravel: 0.5055
+    test/f1_per_class/ground: 0.9291
+    test/f1_per_class/herbaceous: 0.2703
+    test/f1_per_class/shrubs: 0.7559
+    test/f1_per_class/trees: 0.2268
+    test/f1_per_class/water: 0.8031
+    test/iou: 0.4801
+    test/iou_per_class/background: 0.6338
+    test/iou_per_class/built: 0.4388
+    test/iou_per_class/gravel: 0.3382
+    test/iou_per_class/ground: 0.8676
+    test/iou_per_class/herbaceous: 0.1563
+    test/iou_per_class/shrubs: 0.6076
+    test/iou_per_class/trees: 0.1279
+    test/iou_per_class/water: 0.671
+    test/loss: 0.9366
+    test/mean_f1_per_class: 0.6096
+    test/mean_iou_per_class: 0.4801
+    test/precision: 0.6339
+    test/recall: 0.614
+  log_summary:
+    model_name: sam2
+    dataset_name: lctest_20000_jan26
+    duration_minutes: 14.93
+    num_epochs: 6
+    val_loss: 0.0
+    val_iou: 0.0
+    val_f1: 0.0
+    machine_name: zaphod
+  data_source: /media/ken/speedy8/Patchsets/lctest_20000_jan26/lctest_20000_jan26_linux.csv
+- experiment_id: lctest_20000_jan26_segformer_20260203_122238
+  model_name: segformer
+  encoder_name: b3
+  dataset: lctest_20000_jan26
+  path: /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238
+  checkpoints:
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238/checkpoints/epoch=001-val_loss=0.7570-val_iou=0.5781.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238/checkpoints/epoch=003-val_loss=0.7068-val_iou=0.5973.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238/checkpoints/epoch=004-val_loss=0.6856-val_iou=0.6054.ckpt
+  - /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238/checkpoints/last.ckpt
+  best_checkpoint: /media/ken/data/LCAnalysis2026/experiments/lctest_20000_jan26_segformer_20260203_122238/checkpoints/last.ckpt
+  metrics:
+    test/accuracy: 0.73
+    test/f1: 0.7291
+    test/f1_per_class/background: 0.9056
+    test/f1_per_class/built: 0.6999
+    test/f1_per_class/gravel: 0.7414
+    test/f1_per_class/ground: 0.9379
+    test/f1_per_class/herbaceous: 0.4165
+    test/f1_per_class/shrubs: 0.8078
+    test/f1_per_class/trees: 0.4321
+    test/f1_per_class/water: 0.892
+    test/iou: 0.6074
+    test/iou_per_class/background: 0.8275
+    test/iou_per_class/built: 0.5383
+    test/iou_per_class/gravel: 0.5891
+    test/iou_per_class/ground: 0.883
+    test/iou_per_class/herbaceous: 0.263
+    test/iou_per_class/shrubs: 0.6775
+    test/iou_per_class/trees: 0.2756
+    test/iou_per_class/water: 0.805
+    test/loss: 0.684
+    test/mean_f1_per_class: 0.7291
+    test/mean_iou_per_class: 0.6074
+    test/precision: 0.736
+    test/recall: 0.73
+  log_summary:
+    model_name: segformer
+    dataset_name: lctest_20000_jan26
+    duration_minutes: 17.59
+    num_epochs: 6
+    val_loss: 0.0
+    val_iou: 0.0
+    val_f1: 0.0
+    machine_name: zaphod
+  data_source: /media/ken/speedy8/Patchsets/lctest_20000_jan26/lctest_20000_jan26_linux.csv

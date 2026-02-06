@@ -1,0 +1,21 @@
+# Custom Local Imagery Source Configuration
+# For pre-existing raster data on disk
+
+source:
+  name: "custom"
+  platform: "custom"
+  provider: "local"
+
+  # Path to imagery directory (override per use case)
+  data_dir: null
+  file_pattern: "*.tif"
+
+  # Band specification (override per dataset)
+  bands:
+    - {name: "B1", description: "Band 1", index: 0}
+    - {name: "B2", description: "Band 2", index: 1}
+    - {name: "B3", description: "Band 3", index: 2}
+
+  # Spatial info
+  crs: null  # Read from files
+  resolution: null  # Read from files

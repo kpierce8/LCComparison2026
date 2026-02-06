@@ -1,0 +1,26 @@
+# SSL4EO-S12 Configuration
+# Self-Supervised Learning for Earth Observation
+
+model:
+  name: "ssl4eo"
+  model_id: "ssl4eo-s12"
+  source: "manual"
+  architecture: "resnet50"
+
+  # Input specification
+  input_bands: ["B2", "B3", "B4", "B8", "B11", "B12"]
+  input_size: 224
+  num_input_channels: 6
+
+  # Embedding
+  embedding_dim: 768
+  num_layers: 50
+
+  # Weights
+  weights_dir: "models/ssl4eo"
+  checkpoint: null  # Must be downloaded manually
+
+  # Preprocessing
+  normalize:
+    mean: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    std: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

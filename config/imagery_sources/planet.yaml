@@ -1,0 +1,26 @@
+# Planet Imagery Source Configuration
+
+source:
+  name: "planet"
+  platform: "PlanetScope"
+  provider: "api"
+  api_key_env: "PLANET_API_KEY"
+
+  # Bands
+  bands:
+    - {name: "B", description: "Blue", wavelength: 490, resolution: 3}
+    - {name: "G", description: "Green", wavelength: 565, resolution: 3}
+    - {name: "R", description: "Red", wavelength: 665, resolution: 3}
+    - {name: "NIR", description: "NIR", wavelength: 865, resolution: 3}
+
+  # Filtering
+  date_range:
+    start: "2024-06-01"
+    end: "2024-09-30"
+  cloud_filter: 10
+  item_type: "PSScene"
+  asset_type: "ortho_analytic_4b_sr"
+
+  # Export
+  scale: 3
+  crs: "EPSG:32610"

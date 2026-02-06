@@ -1,0 +1,45 @@
+# Data
+data/tiles/
+data/labels/
+data/spatial/
+data/validation/
+data/embeddings/
+data/predictions/
+data/outputs/
+data/checkpoints/
+
+# Models
+models/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep configs
+!config/
+!config/**

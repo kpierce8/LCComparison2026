@@ -1,0 +1,28 @@
+# Prithvi-100M Configuration
+# IBM/NASA Geospatial Foundation Model
+
+model:
+  name: "prithvi"
+  model_id: "ibm-nasa-geospatial/Prithvi-100M"
+  source: "huggingface"
+  architecture: "vit"
+
+  # Input specification
+  input_bands: ["B2", "B3", "B4", "B8", "B11", "B12"]
+  input_size: 224
+  num_input_channels: 6
+
+  # Embedding
+  embedding_dim: 768
+  num_layers: 12
+  num_heads: 12
+  patch_size: 16
+
+  # Weights
+  weights_dir: "models/prithvi"
+  checkpoint: null  # Auto-downloaded from HuggingFace
+
+  # Preprocessing
+  normalize:
+    mean: [494.905, 815.239, 924.944, 2968.881, 2634.621, 1739.579]
+    std: [284.925, 357.299, 575.512, 896.601, 951.455, 808.649]
