@@ -1153,6 +1153,198 @@ def compare_accuracy(ctx, models, names, reference, class_field, output, report)
     click.echo(f"\nSaved to: {output}")
 
 
+# ---- Phase 7: Multi-Resolution & Ensemble Commands ----
+
+
+@cli.command("ensemble")
+@click.option("--models", required=True, help="Comma-separated model raster paths")
+@click.option("--names", default=None, help="Comma-separated model names")
+@click.option("--strategy", default="majority_vote",
+              help="Ensemble strategy (majority_vote, weighted_vote, probability_average)")
+@click.option("--weights", default=None, help="Comma-separated weights (same order as models)")
+@click.option("--output", default=None, help="Output directory")
+@click.pass_context
+def ensemble(ctx, models, names, strategy, weights, output):
+    """Create ensemble predictions from multiple models."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.classification.ensemble import (
+        EnsembleClassifier, save_ensemble_outputs,
+    )
+    from src.processing.resolution_matcher import ResolutionMatcher
+
+    model_paths = [p.strip() for p in models.split(",")]
+    if names:
+        model_names = [n.strip() for n in names.split(",")]
+    else:
+        model_names = [Path(p).stem for p in model_paths]
+
+    # Parse weights
+    weight_dict = None
+    if weights:
+        weight_values = [float(w.strip()) for w in weights.split(",")]
+        if len(weight_values) != len(model_names):
+            click.echo("Number of weights must match number of models.")
+            return
+        weight_dict = dict(zip(model_names, weight_values))
+
+    for p in model_paths:
+        if not Path(p).exists():
+            click.echo(f"Raster not found: {p}")
+            return
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / "ensemble")
+
+    output_dir = Path(output)
+
+    # Align rasters to common grid
+    click.echo(f"Aligning {len(model_paths)} rasters...")
+    matcher = ResolutionMatcher()
+    raster_dict = dict(zip(model_names, model_paths))
+
+    try:
+        aligned = matcher.align_rasters(raster_dict, output_dir / "aligned")
+    except ValueError as e:
+        click.echo(f"Alignment failed: {e}")
+        return
+
+    aligned_paths = {name: info["output"] for name, info in aligned.items()}
+
+    # Load aligned data
+    predictions, metadata = matcher.load_aligned_arrays(aligned_paths)
+
+    click.echo(f"Running {strategy} ensemble...")
+    ec = EnsembleClassifier()
+
+    try:
+        if strategy == "majority_vote":
+            result = ec.majority_vote(predictions)
+        elif strategy == "weighted_vote":
+            if weight_dict is None:
+                click.echo("weighted_vote requires --weights")
+                return
+            result = ec.weighted_vote(predictions, weight_dict)
+        elif strategy == "probability_average":
+            click.echo("Note: probability_average requires probability rasters, using majority_vote.")
+            result = ec.majority_vote(predictions)
+        else:
+            click.echo(f"Unknown strategy: {strategy}")
+            return
+    except Exception as e:
+        click.echo(f"Ensemble failed: {e}")
+        logger.error(f"Ensemble error: {e}")
+        return
+
+    # Save outputs
+    profile = metadata.get("profile", {})
+    outputs = save_ensemble_outputs(result, output_dir, profile, name_prefix="ensemble")
+
+    click.echo(f"\nEnsemble Results ({strategy}):")
+    click.echo(f"  Models: {', '.join(model_names)}")
+    click.echo(f"  Valid pixels: {result.get('valid_pixels', 0):,}")
+    if "mean_agreement" in result:
+        click.echo(f"  Mean agreement: {result['mean_agreement']:.4f}")
+    if "mean_confidence" in result:
+        click.echo(f"  Mean confidence: {result['mean_confidence']:.4f}")
+    click.echo(f"\nSaved to: {output_dir}")
+    for product, path in outputs.items():
+        click.echo(f"  {product}: {path}")
+
+
+@cli.command("fuse-predictions")
+@click.option("--base", required=True, help="Base resolution raster (e.g., Sentinel-2 10m)")
+@click.option("--refinement", required=True, help="Higher-resolution raster (e.g., NAIP 1m)")
+@click.option("--base-name", default="base", help="Name for base layer")
+@click.option("--refinement-name", default="refinement", help="Name for refinement layer")
+@click.option("--strategy", default="high_res_priority",
+              help="Fusion strategy (high_res_priority, confidence_weighted)")
+@click.option("--confidence", default=None, help="Confidence raster for refinement layer")
+@click.option("--confidence-threshold", default=0.5, help="Min confidence for refinement")
+@click.option("--output", default=None, help="Output directory")
+@click.pass_context
+def fuse_predictions(ctx, base, refinement, base_name, refinement_name,
+                     strategy, confidence, confidence_threshold, output):
+    """Fuse multi-resolution predictions using hierarchical strategy."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.classification.ensemble import (
+        HierarchicalFusion, save_ensemble_outputs,
+    )
+    from src.processing.resolution_matcher import ResolutionMatcher
+
+    if not Path(base).exists():
+        click.echo(f"Base raster not found: {base}")
+        return
+    if not Path(refinement).exists():
+        click.echo(f"Refinement raster not found: {refinement}")
+        return
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / "fusion")
+
+    output_dir = Path(output)
+
+    # Align rasters
+    click.echo("Aligning rasters to common grid...")
+    matcher = ResolutionMatcher()
+    raster_dict = {base_name: base, refinement_name: refinement}
+
+    try:
+        aligned = matcher.align_rasters(raster_dict, output_dir / "aligned")
+    except ValueError as e:
+        click.echo(f"Alignment failed: {e}")
+        return
+
+    aligned_paths = {name: info["output"] for name, info in aligned.items()}
+    arrays, metadata = matcher.load_aligned_arrays(aligned_paths)
+
+    base_data = arrays[base_name]
+    ref_data = arrays[refinement_name]
+
+    # Load confidence if provided
+    conf_data = None
+    if confidence:
+        if not Path(confidence).exists():
+            click.echo(f"Confidence raster not found: {confidence}")
+            return
+        conf_aligned = matcher.resample_to_target(
+            confidence, output_dir / "aligned" / "confidence_aligned.tif",
+            target_resolution=aligned[base_name]["resolution"],
+            target_bounds=aligned[base_name]["bounds"],
+        )
+        import rasterio as _rio
+        with _rio.open(conf_aligned["output"]) as src:
+            conf_data = src.read(1)
+
+    click.echo(f"Fusing with {strategy} strategy...")
+    fusion = HierarchicalFusion()
+
+    try:
+        result = fusion.fuse(
+            base_data, ref_data,
+            refinement_confidence=conf_data,
+            confidence_threshold=confidence_threshold,
+            strategy=strategy,
+        )
+    except Exception as e:
+        click.echo(f"Fusion failed: {e}")
+        logger.error(f"Fusion error: {e}")
+        return
+
+    # Save outputs
+    profile = metadata.get("profile", {})
+    outputs = save_ensemble_outputs(result, output_dir, profile, name_prefix="fusion")
+
+    click.echo(f"\nFusion Results ({strategy}):")
+    click.echo(f"  Base ({base_name}): {result['base_pct']:.1f}% of pixels")
+    click.echo(f"  Refinement ({refinement_name}): {result['refinement_pct']:.1f}% of pixels")
+    click.echo(f"  Valid pixels: {result['valid_pixels']:,}")
+    click.echo(f"\nSaved to: {output_dir}")
+    for product, path in outputs.items():
+        click.echo(f"  {product}: {path}")
+
+
 def main():
     cli(obj={})
 
