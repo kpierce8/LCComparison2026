@@ -811,6 +811,226 @@ def mosaic_tiles(ctx, model, predictions_dir, output, product):
         logger.error(f"Mosaic error: {e}")
 
 
+# ---- Phase 5: Spatial Analysis & Validation Commands ----
+
+
+@cli.command("process-by-focus")
+@click.option("--model", default="prithvi", help="Model name")
+@click.option("--layer", default=None, help="Layer name (county, wria, rmz) or comma-separated list")
+@click.option("--prediction", default=None, help="Path to classification raster")
+@click.pass_context
+def process_by_focus(ctx, model, layer, prediction):
+    """Clip predictions to spatial boundaries and compute statistics."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.spatial.focus_area_manager import FocusAreaManager
+    from src.spatial.boundary_processor import BoundaryProcessor
+    from src.spatial.zonal_statistics import compute_layer_stats
+
+    if prediction is None:
+        prediction = str(PROJECT_ROOT / "data" / "outputs" / f"landcover_{model}.tif")
+
+    if not Path(prediction).exists():
+        click.echo(f"Prediction raster not found: {prediction}")
+        click.echo("Run 'lccompare mosaic-tiles' first.")
+        return
+
+    # Setup focus area manager
+    spatial_config = OmegaConf.to_container(config.get("spatial_focus", {}), resolve=True)
+    manager = FocusAreaManager(config=spatial_config)
+
+    # Determine which layers to process
+    if layer:
+        layer_names = [l.strip() for l in layer.split(",")]
+    else:
+        layer_names = list(manager.layers.keys())
+
+    if not layer_names:
+        click.echo("No spatial layers configured. Check config spatial_focus.layers.")
+        return
+
+    processor = BoundaryProcessor()
+
+    for layer_name in layer_names:
+        try:
+            focus_layer = manager.load_layer(layer_name)
+            click.echo(f"\nProcessing {layer_name}: {focus_layer.count} features")
+
+            # Clip to boundaries
+            output_dir = PROJECT_ROOT / "data" / "outputs" / f"by_{layer_name}"
+            clip_results = processor.process_layer(
+                prediction, focus_layer, output_dir, model_name=model,
+            )
+
+            success = sum(1 for r in clip_results.values() if r.get("status") == "success")
+            click.echo(f"  Clipped: {success}/{len(clip_results)}")
+
+            # Compute zonal statistics
+            stats_path = output_dir / f"summary_{layer_name}_stats.csv"
+            stats = compute_layer_stats(
+                prediction, focus_layer,
+                output_path=stats_path,
+            )
+            click.echo(f"  Stats saved: {stats_path}")
+
+        except FileNotFoundError as e:
+            click.echo(f"  Skipping {layer_name}: {e}")
+        except Exception as e:
+            click.echo(f"  Error processing {layer_name}: {e}")
+            logger.error(f"Focus area error for {layer_name}: {e}")
+
+
+@cli.command("zonal-stats")
+@click.option("--prediction", required=True, help="Path to classification raster")
+@click.option("--boundaries", required=True, help="Path to boundary shapefile/GPKG")
+@click.option("--id-field", default="NAME", help="Feature ID field name")
+@click.option("--output", default=None, help="Output CSV path")
+@click.option("--resolution", default=10.0, help="Pixel resolution in meters")
+@click.pass_context
+def zonal_stats(ctx, prediction, boundaries, id_field, output, resolution):
+    """Calculate land cover statistics by spatial zones."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.spatial.focus_area_manager import FocusAreaLayer
+    from src.spatial.zonal_statistics import compute_layer_stats
+
+    if not Path(prediction).exists():
+        click.echo(f"Prediction raster not found: {prediction}")
+        return
+
+    layer_name = Path(boundaries).stem
+    layer = FocusAreaLayer(name=layer_name, path=boundaries, id_field=id_field)
+
+    try:
+        layer.load()
+    except Exception as e:
+        click.echo(f"Failed to load boundaries: {e}")
+        return
+
+    click.echo(f"Computing stats for {layer.count} features in {layer_name}...")
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / f"{layer_name}_stats.csv")
+
+    stats = compute_layer_stats(
+        prediction, layer, resolution=resolution, output_path=output,
+    )
+
+    click.echo(f"\nZonal Statistics ({layer_name}):")
+    for fid, fstats in stats.items():
+        if "error" in fstats:
+            click.echo(f"  {fid}: ERROR - {fstats['error']}")
+        else:
+            dominant = fstats.get("dominant_class", "N/A")
+            area = fstats.get("total_area_hectares", 0)
+            click.echo(f"  {fid}: {area} ha, dominant={dominant}")
+
+    click.echo(f"\nSaved to: {output}")
+
+
+@cli.command("assess-accuracy")
+@click.option("--prediction", required=True, help="Path to classification raster")
+@click.option("--reference", required=True, help="Path to reference points")
+@click.option("--class-field", default="LC_CLASS", help="Class label column in reference data")
+@click.option("--output", default=None, help="Output directory for assessment results")
+@click.pass_context
+def assess_accuracy(ctx, prediction, reference, class_field, output):
+    """Run accuracy assessment against reference points."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.validation.accuracy_assessor import AccuracyAssessor
+
+    if not Path(prediction).exists():
+        click.echo(f"Prediction raster not found: {prediction}")
+        return
+    if not Path(reference).exists():
+        click.echo(f"Reference file not found: {reference}")
+        return
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / "accuracy")
+
+    assessor = AccuracyAssessor()
+    click.echo(f"Assessing accuracy...")
+
+    try:
+        results = assessor.assess(prediction, reference, class_field, output_dir=output)
+    except Exception as e:
+        click.echo(f"Assessment failed: {e}")
+        logger.error(f"Accuracy assessment error: {e}")
+        return
+
+    click.echo(f"\nAccuracy Assessment:")
+    click.echo(f"  Points: {results.get('n_points', 0)}")
+    click.echo(f"  Overall accuracy: {results.get('overall_accuracy', 0):.4f}")
+    click.echo(f"  Kappa: {results.get('kappa', 0):.4f}")
+    click.echo(f"  F1 (macro): {results.get('f1_macro', 0):.4f}")
+
+    per_class = results.get("per_class", {})
+    if per_class:
+        click.echo(f"  Per-class:")
+        for name, metrics in per_class.items():
+            click.echo(
+                f"    {name}: PA={metrics['producers_accuracy']:.3f} "
+                f"UA={metrics['users_accuracy']:.3f} "
+                f"F1={metrics['f1']:.3f} (n={metrics['support']})"
+            )
+
+    for w in results.get("warnings", []):
+        click.echo(f"  WARNING: {w}")
+
+    click.echo(f"\nSaved to: {output}")
+
+
+@cli.command("compare-models")
+@click.option("--raster-a", required=True, help="First classification raster")
+@click.option("--raster-b", required=True, help="Second classification raster")
+@click.option("--name-a", default="model_a", help="Name for first model")
+@click.option("--name-b", default="model_b", help="Name for second model")
+@click.option("--output", default=None, help="Output directory")
+@click.pass_context
+def compare_models(ctx, raster_a, raster_b, name_a, name_b, output):
+    """Compare two land cover classification maps."""
+    logger = logging.getLogger("lccomparison")
+
+    from src.validation.comparison_metrics import compare_with_existing
+
+    if not Path(raster_a).exists():
+        click.echo(f"Raster not found: {raster_a}")
+        return
+    if not Path(raster_b).exists():
+        click.echo(f"Raster not found: {raster_b}")
+        return
+
+    if output is None:
+        output = str(PROJECT_ROOT / "data" / "outputs" / "comparisons" / f"{name_a}_vs_{name_b}")
+
+    click.echo(f"Comparing {name_a} vs {name_b}...")
+
+    try:
+        report = compare_with_existing(
+            raster_a, raster_b, output, model_name=name_a, existing_name=name_b,
+        )
+    except Exception as e:
+        click.echo(f"Comparison failed: {e}")
+        logger.error(f"Comparison error: {e}")
+        return
+
+    agreement = report.get("agreement", {})
+    click.echo(f"\nModel Comparison: {name_a} vs {name_b}")
+    click.echo(f"  Agreement: {agreement.get('agreement_pct', 0):.1f}%")
+    click.echo(f"  Valid pixels: {agreement.get('valid_pixels', 0):,}")
+
+    per_class = agreement.get("per_class", {})
+    if per_class:
+        click.echo(f"  Per-class IoU:")
+        for name, metrics in per_class.items():
+            click.echo(f"    {name}: {metrics['agreement_iou']:.3f}")
+
+    click.echo(f"\nSaved to: {output}")
+
+
 def main():
     cli(obj={})
 
