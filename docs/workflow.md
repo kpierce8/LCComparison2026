@@ -149,10 +149,18 @@ python -m src.pipeline zonal-stats \
 ## 12. Accuracy Assessment
 
 ```bash
+# Basic accuracy assessment
 python -m src.pipeline assess-accuracy \
     --prediction data/outputs/landcover_prithvi.tif \
     --reference data/validation/reference_points.gpkg \
     --class-field LC_CLASS
+
+# With HTML report generation
+python -m src.pipeline assess-accuracy \
+    --prediction data/outputs/landcover_prithvi.tif \
+    --reference data/validation/reference_points.gpkg \
+    --class-field LC_CLASS \
+    --report --model-name prithvi
 ```
 
 Outputs in `data/outputs/accuracy/`:
@@ -160,6 +168,7 @@ Outputs in `data/outputs/accuracy/`:
 - `confusion_matrix.csv` - Full confusion matrix
 - `per_class_accuracy.csv` - Producer's/user's accuracy per class
 - `points_with_predictions.gpkg` - Reference points with predicted values
+- `accuracy_report.html` (with `--report`) - Self-contained HTML report with confusion matrix heatmap, per-class accuracy chart, and error density map
 
 ## 13. Compare Models
 
@@ -183,6 +192,75 @@ Outputs:
 - `agreement_map.tif` - Binary raster (1=agree, 0=disagree)
 - `comparison_report.json` - Agreement percentage, per-class IoU
 - `confusion_matrix.csv` - Cross-tabulation between models
+
+## 14. Compare Accuracy Across Models
+
+Compare accuracy metrics for multiple models against the same reference data:
+
+```bash
+python -m src.pipeline compare-accuracy \
+    --predictions data/outputs/landcover_prithvi.tif,data/outputs/landcover_satlas.tif,data/outputs/landcover_ssl4eo.tif \
+    --names prithvi,satlas,ssl4eo \
+    --reference data/validation/reference_points.gpkg \
+    --class-field LC_CLASS
+```
+
+Outputs:
+- `comparison_report.html` - Multi-model comparison chart, per-model confusion matrices, per-class accuracy breakdown
+- `comparison_metrics.json` - Machine-readable accuracy metrics for all models
+
+## 15. Ensemble Predictions
+
+Combine predictions from multiple models for improved accuracy:
+
+```bash
+# Majority vote ensemble
+python -m src.pipeline ensemble \
+    --models data/outputs/landcover_prithvi.tif,data/outputs/landcover_satlas.tif,data/outputs/landcover_ssl4eo.tif \
+    --names prithvi,satlas,ssl4eo \
+    --strategy majority_vote \
+    --output data/outputs/ensemble
+
+# Weighted vote (if some models perform better)
+python -m src.pipeline ensemble \
+    --models data/outputs/landcover_prithvi.tif,data/outputs/landcover_satlas.tif \
+    --names prithvi,satlas \
+    --strategy weighted_vote \
+    --weights 0.6,0.4 \
+    --output data/outputs/ensemble
+```
+
+Outputs:
+- `ensemble_classification.tif` - Combined classification map
+- `ensemble_agreement.tif` - Per-pixel agreement across input models
+- `ensemble_metadata.json` - Strategy details and model weights
+
+## 16. Hierarchical Fusion
+
+Merge base (coarse) and refinement (fine) predictions:
+
+```bash
+# High-res refinement overrides base where valid
+python -m src.pipeline fuse-predictions \
+    --base data/outputs/landcover_prithvi.tif \
+    --refinement data/outputs/landcover_satlas.tif \
+    --strategy high_res_priority \
+    --output data/outputs/fused
+
+# Confidence-weighted fusion
+python -m src.pipeline fuse-predictions \
+    --base data/outputs/landcover_prithvi.tif \
+    --refinement data/outputs/landcover_satlas.tif \
+    --strategy confidence_weighted \
+    --confidence data/predictions/satlas/confidence.tif \
+    --confidence-threshold 0.7 \
+    --output data/outputs/fused
+```
+
+Outputs:
+- `fused_classification.tif` - Fused classification map
+- `fused_source_map.tif` - Tracks which pixels came from base (1) vs refinement (2)
+- `fusion_metadata.json` - Fusion strategy details and pixel counts
 
 ## Monitoring Progress
 

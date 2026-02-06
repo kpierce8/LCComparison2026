@@ -270,11 +270,12 @@ python -m src.pipeline zonal-stats --prediction output.tif --boundaries zones.gp
 
 ### `assess-accuracy`
 
-Run accuracy assessment against reference points.
+Run accuracy assessment against reference points, with optional HTML report generation.
 
 ```bash
 python -m src.pipeline assess-accuracy --prediction output.tif --reference points.gpkg
 python -m src.pipeline assess-accuracy --prediction output.tif --reference ref.geojson --class-field class_name
+python -m src.pipeline assess-accuracy --prediction output.tif --reference ref.gpkg --report --model-name prithvi
 ```
 
 | Option | Default | Description |
@@ -283,8 +284,32 @@ python -m src.pipeline assess-accuracy --prediction output.tif --reference ref.g
 | `--reference` (required) | - | Path to reference points file |
 | `--class-field` | `LC_CLASS` | Class label column in reference data |
 | `--output` | `data/outputs/accuracy` | Output directory for results |
+| `--report` | false | Generate HTML accuracy report with plots |
+| `--model-name` | `model` | Model name for report title |
 
-Outputs: `accuracy_metrics.json`, `confusion_matrix.csv`, `per_class_accuracy.csv`, `points_with_predictions.gpkg`.
+Outputs: `accuracy_metrics.json`, `confusion_matrix.csv`, `per_class_accuracy.csv`, `points_with_predictions.gpkg`. With `--report`: `accuracy_report.html` (embedded confusion matrix, per-class accuracy bar chart, error density map).
+
+### `compare-accuracy`
+
+Compare accuracy metrics across multiple models against the same reference data.
+
+```bash
+python -m src.pipeline compare-accuracy \
+    --predictions prithvi.tif,satlas.tif,ssl4eo.tif \
+    --names prithvi,satlas,ssl4eo \
+    --reference data/validation/reference_points.gpkg \
+    --class-field LC_CLASS
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--predictions` (required) | - | Comma-separated paths to classification rasters |
+| `--names` (required) | - | Comma-separated model names |
+| `--reference` (required) | - | Path to reference points file |
+| `--class-field` | `LC_CLASS` | Class label column in reference data |
+| `--output` | `data/outputs/comparison` | Output directory for results |
+
+Outputs: `comparison_report.html` (multi-model comparison chart, per-model confusion matrices, per-class accuracy), `comparison_metrics.json`.
 
 ### `compare-models`
 
@@ -304,3 +329,68 @@ python -m src.pipeline compare-models --raster-a prithvi.tif --raster-b segforme
 | `--output` | `data/outputs/comparisons/<a>_vs_<b>` | Output directory |
 
 Outputs: `agreement_map.tif`, `comparison_report.json`, `confusion_matrix.csv`.
+
+---
+
+## Ensemble & Fusion
+
+### `ensemble`
+
+Combine predictions from multiple models using ensemble methods.
+
+```bash
+# Majority vote
+python -m src.pipeline ensemble \
+    --models prithvi.tif,satlas.tif,ssl4eo.tif \
+    --names prithvi,satlas,ssl4eo \
+    --strategy majority_vote \
+    --output data/outputs/ensemble
+
+# Weighted vote with custom weights
+python -m src.pipeline ensemble \
+    --models prithvi.tif,satlas.tif \
+    --names prithvi,satlas \
+    --strategy weighted_vote \
+    --weights 0.6,0.4 \
+    --output data/outputs/ensemble
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--models` (required) | - | Comma-separated paths to classification rasters |
+| `--names` (required) | - | Comma-separated model names |
+| `--strategy` | `majority_vote` | Ensemble strategy (`majority_vote`, `weighted_vote`, `probability_average`) |
+| `--weights` | - | Comma-separated weights for weighted strategies |
+| `--output` | `data/outputs/ensemble` | Output directory |
+
+Outputs: `ensemble_classification.tif`, `ensemble_agreement.tif`, `ensemble_metadata.json`. With probability averaging: `ensemble_probabilities.tif`, `ensemble_uncertainty.tif`.
+
+### `fuse-predictions`
+
+Hierarchical fusion of a base (coarse) and refinement (fine) prediction.
+
+```bash
+python -m src.pipeline fuse-predictions \
+    --base data/outputs/landcover_prithvi.tif \
+    --refinement data/outputs/landcover_satlas.tif \
+    --strategy high_res_priority \
+    --output data/outputs/fused
+
+python -m src.pipeline fuse-predictions \
+    --base base.tif --refinement refinement.tif \
+    --strategy confidence_weighted \
+    --confidence confidence.tif \
+    --confidence-threshold 0.7 \
+    --output data/outputs/fused
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--base` (required) | - | Base (coarse) classification raster |
+| `--refinement` (required) | - | Refinement (fine) classification raster |
+| `--strategy` | `high_res_priority` | Fusion strategy (`high_res_priority`, `confidence_weighted`) |
+| `--confidence` | - | Confidence raster (required for `confidence_weighted`) |
+| `--confidence-threshold` | `0.5` | Threshold for confidence-weighted fusion |
+| `--output` | `data/outputs/fused` | Output directory |
+
+Outputs: `fused_classification.tif`, `fused_source_map.tif` (tracks which pixels came from base vs refinement), `fusion_metadata.json`.

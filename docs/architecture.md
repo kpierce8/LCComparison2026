@@ -36,9 +36,11 @@ src/
 
   processing/              # Batch Processing
     batch_processor.py     # Batch embedding with checkpoint/resume
+    resolution_matcher.py  # Multi-resolution alignment and resampling
 
   classification/          # Classifiers
     classifier.py          # Unified XGBoost/RF/MLP/Linear classifier
+    ensemble.py            # Ensemble methods and hierarchical fusion
 
   training/                # Training Pipeline
     trainer.py             # End-to-end training orchestration
@@ -53,6 +55,8 @@ src/
   validation/              # Accuracy Assessment
     accuracy_assessor.py   # Accuracy vs reference points
     comparison_metrics.py  # Spatial agreement between models
+    error_analysis.py      # Spatial error maps, confusion analysis, edge effects
+    report_generator.py    # HTML reports with embedded matplotlib plots
 
   integration/             # External Integration
     existing_model_integration.py  # LCAnalysis2026 experiment discovery
@@ -89,12 +93,19 @@ src/
                                                        |
                                        data/outputs/landcover_<model>.tif
                                                        |
-                      +----------------+---------------+----------------+
-                      |                |               |                |
-              process-by-focus    zonal-stats   assess-accuracy   compare-models
-                      |                |               |                |
-                by_<layer>/      *_stats.csv    accuracy/       comparisons/
-                clipped TIFFs                   metrics.json    agreement_map.tif
+                      +--------+--------+--------+--------+--------+
+                      |        |        |        |        |
+              process-by   zonal   assess    compare   ensemble
+              -focus       -stats  -accuracy  -models
+                      |        |        |        |        |
+                by_<layer>/ *_stats  accuracy/ comparisons/  |
+                clipped     .csv    metrics   agreement     |
+                TIFFs               .json     _map.tif      |
+                                    report                  |
+                                    .html          fuse-predictions
+                                                            |
+                                                   fused_classification.tif
+                                                   source_map.tif
 ```
 
 ## Key Design Patterns
@@ -137,6 +148,43 @@ Spatial operations use rasterio for raster I/O and geopandas for vector data:
 - Computes producer's/user's accuracy, kappa, F1, confusion matrix
 - `compare_models()` ranks multiple models by overall accuracy
 
+### Error Analysis
+
+`error_analysis.py` provides spatial error diagnostics:
+- `compute_error_map()` - Spatial error map from predictions vs reference, top confusion pairs, per-class error rates
+- `analyze_class_confusions()` - Confusion matrix pattern analysis with asymmetry detection and omission/commission rates
+- `compute_spatial_error_density()` - Grid-based error density with hotspot identification
+- `compute_edge_error_rate()` - Edge vs interior error comparison using kernel-based edge detection
+
+### Report Generation
+
+`report_generator.py` produces HTML reports with embedded matplotlib plots:
+- Confusion matrix heatmaps (row-normalized with cell annotations)
+- Per-class accuracy bar charts (producer's accuracy, user's accuracy, F1)
+- Multi-model comparison charts
+- Spatial error density maps
+- All plots encoded as base64 PNG embedded directly in self-contained HTML files
+
+### Resolution Matching
+
+`ResolutionMatcher` aligns rasters of different resolutions to a common grid:
+- Auto-detects finest resolution across inputs
+- Computes intersection or union extents
+- Reprojects across CRS boundaries using `rasterio.warp`
+- Supports nearest neighbor (for classifications) and bilinear/cubic (for probabilities) resampling
+
+### Ensemble Methods
+
+`EnsembleClassifier` combines multiple model predictions:
+- **Majority vote** - Per-pixel mode with agreement map
+- **Weighted vote** - Model-weighted voting with confidence output
+- **Probability average** - Weighted probability averaging with entropy-based uncertainty
+
+`HierarchicalFusion` merges base and refinement predictions:
+- **High-res priority** - Refinement overrides base where valid
+- **Confidence weighted** - Uses confidence raster to select between base and refinement
+- Source tracking map shows which pixels came from each input
+
 ## Foundation Models
 
 | Model | Architecture | Input | Output | Source |
@@ -164,4 +212,5 @@ Core:
 Optional:
 - **earthengine-api** / **geemap** - GEE imagery export (graceful degradation if unavailable)
 - **google-cloud-storage** - GCS export strategy
+- **matplotlib** - Report generation (confusion matrices, accuracy charts, error density maps)
 - **plotly** - Interactive visualizations

@@ -134,7 +134,7 @@ LCComparison2026/
 python -m pytest tests/ -v
 ```
 
-The test suite covers all modules with 224 tests.
+The test suite covers all modules with 287 tests.
 
 ## Next Steps
 
