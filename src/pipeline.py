@@ -10,12 +10,14 @@ import sys
 from pathlib import Path
 
 import click
+import numpy as np
 from omegaconf import OmegaConf
 
 from src.config_schema import CLASS_SCHEMA, load_config, validate_config
 from src.utils.logging_utils import setup_logging
 
 PROJECT_ROOT = Path(__file__).parent.parent
+__version__ = "0.1.0"
 
 
 def _get_config(config_path: str | None, overrides: tuple[str, ...] | None = None) -> OmegaConf:
@@ -25,22 +27,70 @@ def _get_config(config_path: str | None, overrides: tuple[str, ...] | None = Non
     return load_config(path, override_list)
 
 
+def _validate_raster(path: str, label: str = "Raster") -> bool:
+    """Check that a raster file exists and is a valid GeoTIFF."""
+    p = Path(path)
+    if not p.exists():
+        click.echo(f"Error: {label} not found: {path}")
+        return False
+    if p.suffix.lower() not in (".tif", ".tiff", ".geotiff"):
+        click.echo(f"Warning: {label} '{p.name}' is not a .tif file. Proceeding anyway.")
+    return True
+
+
+def _validate_vector(path: str, label: str = "File") -> bool:
+    """Check that a vector/reference file exists."""
+    p = Path(path)
+    if not p.exists():
+        click.echo(f"Error: {label} not found: {path}")
+        return False
+    valid_exts = {".geojson", ".gpkg", ".shp", ".csv", ".json"}
+    if p.suffix.lower() not in valid_exts:
+        click.echo(f"Warning: {label} '{p.name}' has unusual extension. Proceeding anyway.")
+    return True
+
+
+def _validate_model_name(model: str) -> bool:
+    """Check that a model name is recognized."""
+    valid = {"prithvi", "satlas", "ssl4eo"}
+    if model not in valid:
+        click.echo(f"Error: Unknown model '{model}'. Choose from: {', '.join(sorted(valid))}")
+        return False
+    return True
+
+
+def _ensure_dir(path: str | Path) -> Path:
+    """Create output directory if needed and return Path."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 @click.group()
-@click.option("--config", "config_path", default=None, help="Path to config YAML")
-@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
+@click.option("--config", "config_path", default=None, help="Path to config YAML file.")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug logging.")
+@click.version_option(__version__, prog_name="lccompare")
 @click.pass_context
 def cli(ctx, config_path, verbose):
-    """LCComparison2026 - Land Cover Model Comparison Framework."""
+    """LCComparison2026 - Land Cover Model Comparison Framework.
+
+    Compare foundation models (Prithvi, SatLas, SSL4EO) against
+    existing LCAnalysis2026 segmentation models for land cover
+    classification using a linear probing approach.
+    """
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config_path
     level = "DEBUG" if verbose else "INFO"
     setup_logging(level=level, log_file=PROJECT_ROOT / "logs" / "lccomparison.log")
 
 
+# ---- Project Setup Commands ----
+
+
 @cli.command()
 @click.pass_context
 def init(ctx):
-    """Initialize project: validate config and create directories."""
+    """Initialize project: validate config and create data directories."""
     logger = logging.getLogger("lccomparison")
     config = _get_config(ctx.obj.get("config_path"))
 
@@ -831,9 +881,8 @@ def process_by_focus(ctx, model, layer, prediction):
     if prediction is None:
         prediction = str(PROJECT_ROOT / "data" / "outputs" / f"landcover_{model}.tif")
 
-    if not Path(prediction).exists():
-        click.echo(f"Prediction raster not found: {prediction}")
-        click.echo("Run 'lccompare mosaic-tiles' first.")
+    if not _validate_raster(prediction, "Prediction raster"):
+        click.echo("Hint: Run 'lccompare mosaic-tiles' first.")
         return
 
     # Setup focus area manager
@@ -895,8 +944,7 @@ def zonal_stats(ctx, prediction, boundaries, id_field, output, resolution):
     from src.spatial.focus_area_manager import FocusAreaLayer
     from src.spatial.zonal_statistics import compute_layer_stats
 
-    if not Path(prediction).exists():
-        click.echo(f"Prediction raster not found: {prediction}")
+    if not _validate_raster(prediction, "Prediction raster"):
         return
 
     layer_name = Path(boundaries).stem
@@ -943,11 +991,9 @@ def assess_accuracy(ctx, prediction, reference, class_field, output, report, mod
 
     from src.validation.accuracy_assessor import AccuracyAssessor
 
-    if not Path(prediction).exists():
-        click.echo(f"Prediction raster not found: {prediction}")
+    if not _validate_raster(prediction, "Prediction raster"):
         return
-    if not Path(reference).exists():
-        click.echo(f"Reference file not found: {reference}")
+    if not _validate_vector(reference, "Reference file"):
         return
 
     if output is None:
@@ -955,6 +1001,7 @@ def assess_accuracy(ctx, prediction, reference, class_field, output, report, mod
     if model_name is None:
         model_name = Path(prediction).stem
 
+    _ensure_dir(output)
     assessor = AccuracyAssessor()
     click.echo(f"Assessing accuracy...")
 
@@ -1032,11 +1079,9 @@ def compare_models(ctx, raster_a, raster_b, name_a, name_b, output):
 
     from src.validation.comparison_metrics import compare_with_existing
 
-    if not Path(raster_a).exists():
-        click.echo(f"Raster not found: {raster_a}")
+    if not _validate_raster(raster_a, f"Raster A ({name_a})"):
         return
-    if not Path(raster_b).exists():
-        click.echo(f"Raster not found: {raster_b}")
+    if not _validate_raster(raster_b, f"Raster B ({name_b})"):
         return
 
     if output is None:
@@ -1093,11 +1138,9 @@ def compare_accuracy(ctx, models, names, reference, class_field, output, report)
 
     # Validate paths
     for p in model_paths:
-        if not Path(p).exists():
-            click.echo(f"Raster not found: {p}")
+        if not _validate_raster(p, "Model raster"):
             return
-    if not Path(reference).exists():
-        click.echo(f"Reference file not found: {reference}")
+    if not _validate_vector(reference, "Reference file"):
         return
 
     if output is None:
@@ -1189,8 +1232,7 @@ def ensemble(ctx, models, names, strategy, weights, output):
         weight_dict = dict(zip(model_names, weight_values))
 
     for p in model_paths:
-        if not Path(p).exists():
-            click.echo(f"Raster not found: {p}")
+        if not _validate_raster(p, "Model raster"):
             return
 
     if output is None:
@@ -1273,11 +1315,9 @@ def fuse_predictions(ctx, base, refinement, base_name, refinement_name,
     )
     from src.processing.resolution_matcher import ResolutionMatcher
 
-    if not Path(base).exists():
-        click.echo(f"Base raster not found: {base}")
+    if not _validate_raster(base, "Base raster"):
         return
-    if not Path(refinement).exists():
-        click.echo(f"Refinement raster not found: {refinement}")
+    if not _validate_raster(refinement, "Refinement raster"):
         return
 
     if output is None:
