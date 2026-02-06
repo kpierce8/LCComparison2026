@@ -413,6 +413,33 @@ def status(ctx):
     else:
         click.echo("\nExisting models not yet discovered. Run 'lccompare discover-existing'.")
 
+    # Check for model weights
+    models_dir = PROJECT_ROOT / config.get("paths", {}).get("models_dir", "models")
+    if models_dir.exists():
+        model_dirs = [d for d in models_dir.iterdir() if d.is_dir()]
+        if model_dirs:
+            click.echo("\nModel Weights:")
+            for md in model_dirs:
+                weight_files = list(md.glob("*.pt")) + list(md.glob("*.pth"))
+                status_str = f"{len(weight_files)} file(s)" if weight_files else "not downloaded"
+                click.echo(f"  {md.name}: {status_str}")
+
+    # Check for embeddings
+    emb_dir = PROJECT_ROOT / "data" / "embeddings"
+    if emb_dir.exists():
+        for model_dir in sorted(emb_dir.iterdir()):
+            if model_dir.is_dir():
+                npz_files = list(model_dir.glob("*.npz"))
+                cp_file = model_dir / f"{model_dir.name}_checkpoint.json"
+                if npz_files or cp_file.exists():
+                    click.echo(f"\nEmbeddings ({model_dir.name}): {len(npz_files)} cached")
+                    if cp_file.exists():
+                        import json as _json
+                        with open(cp_file) as _f:
+                            cp = _json.load(_f)
+                        click.echo(f"  Completed: {len(cp.get('completed_tiles', []))}")
+                        click.echo(f"  Failed: {len(cp.get('failed_tiles', []))}")
+
     # Check for labels
     labels_dir = PROJECT_ROOT / "data" / "labels"
     label_files = list(labels_dir.glob("**/*.geojson"))
@@ -425,12 +452,124 @@ def status(ctx):
 
 
 @cli.command("download-models")
-@click.option("--model", default=None, help="Specific model to download")
+@click.option("--model", default=None, help="Specific model to download (prithvi, satlas, ssl4eo)")
+@click.option("--force", is_flag=True, help="Re-download even if cached")
 @click.pass_context
-def download_models(ctx, model):
-    """Download foundation model weights (stub for Phase 3)."""
-    click.echo("Model download stub - will be implemented in Phase 3")
-    click.echo("Models to download: prithvi, satlas, ssl4eo")
+def download_models(ctx, model, force):
+    """Download foundation model weights from HuggingFace."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.models.model_downloader import ModelDownloader, MODEL_REGISTRY
+
+    models_dir = str(PROJECT_ROOT / config.get("paths", {}).get("models_dir", "models"))
+    downloader = ModelDownloader(models_dir=models_dir)
+
+    targets = [model] if model else list(MODEL_REGISTRY.keys())
+
+    for name in targets:
+        if name not in MODEL_REGISTRY:
+            click.echo(f"Unknown model: {name}. Available: {list(MODEL_REGISTRY.keys())}")
+            continue
+
+        click.echo(f"Downloading {name}...")
+        try:
+            path = downloader.download(name, force=force)
+            click.echo(f"  Saved to: {path}")
+        except Exception as e:
+            click.echo(f"  Failed: {e}")
+            logger.error(f"Download failed for {name}: {e}")
+
+    # Show status
+    status = downloader.get_status()
+    click.echo("\nModel Status:")
+    for name, info in status.items():
+        dl = "downloaded" if info["downloaded"] else "not downloaded"
+        size = f" ({info['size_mb']:.1f} MB)" if info.get("size_mb") else ""
+        click.echo(f"  {name}: {dl}{size}")
+
+
+# ---- Phase 3: Model Integration Commands ----
+
+
+@cli.command("generate-embeddings")
+@click.option("--model", default="prithvi", help="Model name (prithvi, satlas, ssl4eo)")
+@click.option("--input-dir", default=None, help="Input preprocessed tiles directory")
+@click.option("--output-dir", default=None, help="Output embeddings directory")
+@click.option("--batch-size", default=8, help="Batch size for inference")
+@click.option("--device", default=None, help="Device (cpu, cuda)")
+@click.option("--resume/--no-resume", default=True, help="Resume from checkpoint")
+@click.option("--auto-download", is_flag=True, help="Auto-download weights if missing")
+@click.pass_context
+def generate_embeddings(ctx, model, input_dir, output_dir, batch_size, device, resume, auto_download):
+    """Generate embeddings for preprocessed tiles using a foundation model."""
+    logger = logging.getLogger("lccomparison")
+    config = _get_config(ctx.obj.get("config_path"))
+
+    from src.models.model_registry import load_model
+    from src.data.preprocessor import Preprocessor
+    from src.processing.batch_processor import BatchProcessor
+
+    # Resolve directories
+    if input_dir is None:
+        input_dir = str(PROJECT_ROOT / "data" / "embeddings" / model / "preprocessed")
+    if output_dir is None:
+        output_dir = str(PROJECT_ROOT / "data" / "embeddings" / model)
+    if device is None:
+        device = config.get("processing", {}).get("device", "cpu")
+
+    # Find input tiles
+    input_path = Path(input_dir)
+    tile_files = sorted(input_path.glob("*.npz")) + sorted(input_path.glob("*.tif"))
+    if not tile_files:
+        click.echo(f"No tiles found in {input_dir}")
+        click.echo("Run 'lccompare preprocess' first to prepare tiles.")
+        return
+
+    tile_paths = {p.stem: p for p in tile_files}
+    click.echo(f"Found {len(tile_paths)} tiles for {model}")
+
+    # Load model
+    click.echo(f"Loading {model} on {device}...")
+    try:
+        models_dir = str(PROJECT_ROOT / config.get("paths", {}).get("models_dir", "models"))
+        embedding_model = load_model(
+            model, device=device, auto_download=auto_download, models_dir=models_dir,
+        )
+    except Exception as e:
+        click.echo(f"Failed to load model: {e}")
+        click.echo("Try 'lccompare download-models' first.")
+        return
+
+    # Setup processor
+    proc_config = config.get("processing", {})
+    checkpoint_freq = proc_config.get("checkpoint_frequency", 100)
+    cache = proc_config.get("cache_embeddings", True)
+    max_mem = proc_config.get("max_memory_gb", 16)
+
+    preprocessor = Preprocessor(model_name=model)
+    processor = BatchProcessor(
+        model=embedding_model,
+        preprocessor=preprocessor,
+        output_dir=output_dir,
+        batch_size=batch_size,
+        checkpoint_frequency=checkpoint_freq,
+        cache_embeddings=cache,
+        max_memory_gb=max_mem,
+    )
+
+    # Process
+    click.echo(f"Generating embeddings (batch_size={batch_size}, resume={resume})...")
+    result = processor.process_tiles(tile_paths, resume=resume)
+
+    # Print summary
+    summary = result["summary"]
+    click.echo(f"\nEmbedding Generation Summary:")
+    click.echo(f"  Model: {summary['model']}")
+    click.echo(f"  Processed: {summary['processed']}/{summary['total_tiles']}")
+    click.echo(f"  Failed: {summary['failed']}")
+    click.echo(f"  Time: {summary['elapsed_seconds']}s ({summary['tiles_per_second']} tiles/sec)")
+    click.echo(f"  Output: {output_dir}")
 
 
 def main():

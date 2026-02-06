@@ -8,8 +8,8 @@ data/predictions/
 data/outputs/
 data/checkpoints/
 
-# Models
-models/
+# Model weights (top-level only, not src/models/)
+/models/
 
 # Logs
 logs/
